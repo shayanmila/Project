@@ -33,6 +33,8 @@ jobs:
         run: |
           flutter create --platforms=android --project-name exness_trade_dashboard --org online.masoomdev .
           flutter pub get
+          # flutter create adds a template test for MyApp which does not exist here.
+          rm -f test/widget_test.dart
 
       - name: Configure Android biometric activity
         working-directory: android
