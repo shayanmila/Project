@@ -167,6 +167,28 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
       actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
     ));
   }
+  Future<void> _editStops(Map<String, dynamic> p) async {
+    final sl = TextEditingController(text: '${p['sl'] == 0 ? '' : p['sl']}');
+    final tp = TextEditingController(text: '${p['tp'] == 0 ? '' : p['tp']}');
+    await showDialog<void>(context: context, builder: (ctx) => AlertDialog(
+      title: Text('SL / TP • Ticket ${p['ticket']}'),
+      content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Text('${p['symbol']} — preview only'),
+        const SizedBox(height: 12),
+        _field(sl, 'Stop Loss price (blank = unset)'),
+        _field(tp, 'Take Profit price (blank = unset)'),
+      ])),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(onPressed: () {
+          final valid = [sl, tp].every((c) => c.text.trim().isEmpty || ((double.tryParse(c.text.trim()) ?? -1) >= 0));
+          if (!valid) { _message('Enter valid non-negative prices'); return; }
+          final detail = 'Ticket: ${p['ticket']}\nSymbol: ${p['symbol']}\nNew SL: ${sl.text.isEmpty ? 'Unset' : sl.text}\nNew TP: ${tp.text.isEmpty ? 'Unset' : tp.text}';
+          Navigator.pop(ctx);
+          _preview('Modify SL / TP', detail);
+        }, child: const Text('Preview changes'))],
+    ));
+    sl.dispose(); tp.dispose();
+  }
   Widget _field(TextEditingController c, String label) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: TextField(controller: c, decoration: InputDecoration(labelText: label, border: const OutlineInputBorder())),
@@ -218,7 +240,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
           ListTile(title: const Text('Entry / Current'), trailing: Text('${formatNumber(p['price_open'], 3)} / ${formatNumber(p['price_current'], 3)}')),
           ListTile(title: const Text('Stop Loss'), trailing: Text(p['sl'] == 0 ? 'Not set' : formatNumber(p['sl'], 3))),
           ListTile(title: const Text('Take Profit'), trailing: Text(p['tp'] == 0 ? 'Not set' : formatNumber(p['tp'], 3))),
-          Wrap(spacing: 8, children: [OutlinedButton(onPressed: () => _preview('Edit SL/TP', 'Ticket: ${p['ticket']}\nSymbol: ${p['symbol']}\nCurrent SL: ${p['sl']}\nCurrent TP: ${p['tp']}'), child: const Text('SL / TP')), OutlinedButton(onPressed: () => _preview('Close position', 'Ticket: ${p['ticket']}\nSymbol: ${p['symbol']}\nLots: ${p['volume']}'), child: const Text('Close'))]),
+          Wrap(spacing: 8, children: [OutlinedButton(onPressed: () => _editStops(p), child: const Text('SL / TP')), OutlinedButton(onPressed: () => _preview('Close position', 'Ticket: ${p['ticket']}\nSymbol: ${p['symbol']}\nLots: ${p['volume']}'), child: const Text('Close'))]),
         ],
       ));
     },
