@@ -159,12 +159,12 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  String num(dynamic v, [int digits = 2]) => v is num ? v.toStringAsFixed(digits) : '—';
+  String formatNumber(dynamic v, [int digits = 2]) => v is num ? v.toStringAsFixed(digits) : '—';
   Widget metric(String name, dynamic value, String currency) => Card(
     child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(name, style: const TextStyle(fontSize: 13)),
       const SizedBox(height: 8),
-      Text('${num(value)} $currency', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      Text('${formatNumber(value)} $currency', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
     ])),
   );
 
@@ -184,7 +184,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
           metric('Floating P/L', a['profit'], currency),
           metric('Free Margin', a['margin_free'], currency),
         ]),
-        ListTile(title: const Text('Margin used'), trailing: Text('${num(a['margin'])} $currency')),
+        ListTile(title: const Text('Margin used'), trailing: Text('${formatNumber(a['margin'])} $currency')),
         ListTile(title: const Text('Open positions'), trailing: Text('${positions.length}')),
         const Padding(padding: EdgeInsets.all(12), child: Text('Quotes: no dedicated quote endpoint yet. Position current prices appear in Positions.', style: TextStyle(fontSize: 12))),
       ],
@@ -198,13 +198,13 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
       final p = positions[i] as Map<String, dynamic>;
       final isBuy = p['type'] == 0;
       return Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5), child: ExpansionTile(
-        title: Text('${p['symbol']} • ${isBuy ? 'BUY' : 'SELL'} • ${num(p['volume'])} lots'),
-        subtitle: Text('P/L: ${num(p['profit'])} ${account?['currency'] ?? ''}'),
+        title: Text('${p['symbol']} • ${isBuy ? 'BUY' : 'SELL'} • ${formatNumber(p['volume'])} lots'),
+        subtitle: Text('P/L: ${formatNumber(p['profit'])} ${account?['currency'] ?? ''}'),
         children: [
           ListTile(title: const Text('Ticket'), trailing: Text('${p['ticket']}')),
-          ListTile(title: const Text('Entry / Current'), trailing: Text('${num(p['price_open'], 3)} / ${num(p['price_current'], 3)}')),
-          ListTile(title: const Text('Stop Loss'), trailing: Text(p['sl'] == 0 ? 'Not set' : num(p['sl'], 3))),
-          ListTile(title: const Text('Take Profit'), trailing: Text(p['tp'] == 0 ? 'Not set' : num(p['tp'], 3))),
+          ListTile(title: const Text('Entry / Current'), trailing: Text('${formatNumber(p['price_open'], 3)} / ${formatNumber(p['price_current'], 3)}')),
+          ListTile(title: const Text('Stop Loss'), trailing: Text(p['sl'] == 0 ? 'Not set' : formatNumber(p['sl'], 3))),
+          ListTile(title: const Text('Take Profit'), trailing: Text(p['tp'] == 0 ? 'Not set' : formatNumber(p['tp'], 3))),
         ],
       ));
     },
