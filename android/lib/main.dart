@@ -1,11 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
-import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
-import 'package:local_auth/local_auth.dart';
 
 void main() => runApp(const TradeApp());
 
@@ -17,15 +14,14 @@ class TradeApp extends StatefulWidget {
 
 class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
   final store = const FlutterSecureStorage();
-  final biometric = LocalAuthentication();
   final url = TextEditingController();
   final token = TextEditingController();
-  final pin = TextEditingController();
   Timer? timer;
   Map<String, dynamic>? account;
   List<dynamic> positions = [];
   String status = 'Not connected';
-  bool dark = false, unlocked = false, configured = false, hasPin = false, useBiometric = false;
+  bool dark = false, configured = false;
+  int refreshSeconds = 5;
   bool busy = false, foreground = true;
   int tab = 0;
 
@@ -40,60 +36,23 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     url.text = await store.read(key: 'base_url') ?? '';
     token.text = await store.read(key: 'api_token') ?? '';
     dark = (await store.read(key: 'dark')) == 'true';
-    useBiometric = (await store.read(key: 'biometric')) == 'true';
-    hasPin = (await store.read(key: 'pin_hash')) != null;
+    refreshSeconds = int.tryParse(await store.read(key: 'refresh_seconds') ?? '') ?? 5;
+    if (![1, 2, 5, 10, 15, 30, 60].contains(refreshSeconds)) refreshSeconds = 5;
     configured = url.text.isNotEmpty && token.text.isNotEmpty;
     if (mounted) setState(() {});
-  }
-
-  String _hash(String value, String salt) => sha256.convert(utf8.encode('$salt:$value')).toString();
-
-  Future<void> _unlock() async {
-    final value = pin.text.trim();
-    if (!RegExp(r'^\d{6}$').hasMatch(value)) {
-      _message('Enter exactly six digits');
-      return;
-    }
-    if (!hasPin) {
-      final salt = List.generate(24, (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0')).join();
-      await store.write(key: 'pin_salt', value: salt);
-      await store.write(key: 'pin_hash', value: _hash(value, salt));
-      hasPin = true;
-    } else {
-      final salt = await store.read(key: 'pin_salt') ?? '';
-      if (_hash(value, salt) != await store.read(key: 'pin_hash')) {
-        _message('Incorrect PIN');
-        return;
-      }
-    }
-    pin.clear();
-    setState(() => unlocked = true);
     _start();
-  }
-
-  Future<void> _fingerprint() async {
-    try {
-      if (!useBiometric || !hasPin) return;
-      final ok = await biometric.authenticate(localizedReason: 'Unlock MT5 dashboard', options: const AuthenticationOptions(biometricOnly: true, stickyAuth: true));
-      if (ok && mounted) {
-        setState(() => unlocked = true);
-        _start();
-      }
-    } catch (_) {
-      _message('Biometric authentication unavailable');
-    }
   }
 
   void _start() {
     timer?.cancel();
-    if (unlocked && configured && foreground) {
+    if (configured && foreground) {
       _refresh();
-      timer = Timer.periodic(const Duration(seconds: 1), (_) => _refresh());
+      timer = Timer.periodic(Duration(seconds: refreshSeconds), (_) => _refresh());
     }
   }
 
   Future<void> _refresh() async {
-    if (busy || !mounted || !foreground || !unlocked || !configured) return;
+    if (busy || !mounted || !foreground || !configured) return;
     busy = true;
     try {
       final base = url.text.trim().replaceAll(RegExp(r'/+$'), '');
@@ -147,7 +106,8 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     foreground = state == AppLifecycleState.resumed;
     if (!foreground) {
       timer?.cancel();
-      setState(() => unlocked = false);
+    } else {
+      _start();
     }
   }
 
@@ -157,7 +117,6 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     timer?.cancel();
     url.dispose();
     token.dispose();
-    pin.dispose();
     super.dispose();
   }
 
@@ -224,17 +183,26 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
       await store.write(key: 'dark', value: '$v');
       setState(() => dark = v);
     }),
-    SwitchListTile(title: const Text('Fingerprint unlock'), subtitle: const Text('Requires device biometrics and PIN fallback'), value: useBiometric, onChanged: (v) async {
-      if (v && !await biometric.canCheckBiometrics) {
-        _message('Biometrics not available');
-        return;
-      }
-      await store.write(key: 'biometric', value: '$v');
-      setState(() => useBiometric = v);
-    }),
-    const ListTile(title: Text('Refresh interval'), subtitle: Text('Every 1 second while open')),
+    ListTile(
+      title: const Text('Refresh interval'),
+      subtitle: Text('Every $refreshSeconds seconds while app is open'),
+      trailing: DropdownButton<int>(
+        value: refreshSeconds,
+        items: const [1, 2, 5, 10, 15, 30, 60]
+            .map((seconds) => DropdownMenuItem<int>(
+                  value: seconds,
+                  child: Text('$seconds sec'),
+                ))
+            .toList(),
+        onChanged: (value) async {
+          if (value == null) return;
+          await store.write(key: 'refresh_seconds', value: '$value');
+          setState(() => refreshSeconds = value);
+          _start();
+        },
+      ),
+    ),
     const ListTile(title: Text('Safety mode'), subtitle: Text('Read-only — real-account trade operations disabled')),
-    OutlinedButton(onPressed: () { timer?.cancel(); setState(() => unlocked = false); }, child: const Text('Lock now')),
   ]);
 
   @override
@@ -246,22 +214,12 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     darkTheme: ThemeData(colorSchemeSeed: Colors.indigo, brightness: Brightness.dark, useMaterial3: true),
     home: Scaffold(
       appBar: AppBar(title: const Text('Exness Trade Dashboard')),
-      body: !unlocked
-          ? Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 360), child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.lock_outline, size: 56),
-              const SizedBox(height: 12),
-              Text(hasPin ? 'Enter your 6-digit PIN' : 'Create a 6-digit PIN', style: const TextStyle(fontSize: 20)),
-              const SizedBox(height: 18),
-              TextField(controller: pin, keyboardType: TextInputType.number, obscureText: true, maxLength: 6, decoration: const InputDecoration(labelText: '6-digit PIN', border: OutlineInputBorder())),
-              FilledButton(onPressed: _unlock, child: Text(hasPin ? 'Unlock' : 'Set PIN')),
-              if (hasPin && useBiometric) TextButton.icon(onPressed: _fingerprint, icon: const Icon(Icons.fingerprint), label: const Text('Unlock with fingerprint')),
-            ]))))
-          : IndexedStack(index: tab, children: [_dashboard(), _positions(), _settings()]),
-      bottomNavigationBar: unlocked ? NavigationBar(selectedIndex: tab, onDestinationSelected: (v) => setState(() => tab = v), destinations: const [
+      body: IndexedStack(index: tab, children: [_dashboard(), _positions(), _settings()]),
+      bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (v) => setState(() => tab = v), destinations: const [
         NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Dashboard'),
         NavigationDestination(icon: Icon(Icons.list_alt), label: 'Positions'),
         NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
-      ]) : null,
+      ]),
     ),
   );
 }
