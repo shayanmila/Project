@@ -100,8 +100,8 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
       if (!base.startsWith('https://')) throw Exception('HTTPS required');
       final headers = {'Authorization': 'Bearer ${token.text.trim()}'};
       final results = await Future.wait([
-        http.get(Uri.parse('$base/account'), headers: headers).timeout(const Duration(seconds: 5)),
-        http.get(Uri.parse('$base/positions'), headers: headers).timeout(const Duration(seconds: 5)),
+        http.get(Uri.parse('$base/account'), headers: headers).timeout(const Duration(seconds: 20)),
+        http.get(Uri.parse('$base/positions'), headers: headers).timeout(const Duration(seconds: 20)),
       ]);
       if (results.any((r) => r.statusCode != 200)) {
         throw Exception('API returned ${results.map((r) => r.statusCode).join(', ')}');
@@ -114,6 +114,8 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
         positions = p;
         status = 'Connected • ${DateTime.now().toLocal().toString().substring(11, 19)}';
       });
+    } on TimeoutException {
+      if (mounted) setState(() => status = 'API timeout (20s). Check MT5 backend /account and /positions response times.');
     } catch (e) {
       if (mounted) setState(() => status = 'Offline / error: $e');
     } finally {
