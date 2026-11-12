@@ -24,6 +24,13 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
   int refreshSeconds = 5;
   bool busy = false, foreground = true;
   int tab = 0;
+  final symbolInput = TextEditingController();
+  final lotsInput = TextEditingController(text: '0.01');
+  final slInput = TextEditingController();
+  final tpInput = TextEditingController();
+  final gridCountInput = TextEditingController(text: '3');
+  final gridSpacingInput = TextEditingController();
+  String side = 'BUY';
 
   @override
   void initState() {
@@ -117,6 +124,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     timer?.cancel();
     url.dispose();
     token.dispose();
+    for (final c in [symbolInput, lotsInput, slInput, tpInput, gridCountInput, gridSpacingInput]) { c.dispose(); }
     super.dispose();
   }
 
@@ -133,7 +141,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     final a = account;
     final currency = a?['currency']?.toString() ?? '';
     return RefreshIndicator(onRefresh: _refresh, child: ListView(padding: const EdgeInsets.all(12), children: [
-      const ListTile(title: Text('REAL ACCOUNT • READ ONLY', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('No trade placement or modification available')),
+      const ListTile(title: Text('REAL ACCOUNT • EXECUTION DISABLED', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Trade controls are previews only; no orders will be sent')),
       ListTile(title: Text(status), leading: Icon(status.startsWith('Connected') ? Icons.cloud_done : Icons.cloud_off)),
       if (a == null) const ListTile(title: Text('Waiting for account data...')),
       if (a != null) ...[
@@ -152,11 +160,55 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     ]));
   }
 
+  Future<void> _preview(String title, String details) async {
+    await showDialog<void>(context: context, builder: (ctx) => AlertDialog(
+      title: Text('$title — Preview only'),
+      content: SingleChildScrollView(child: Text('$details\n\nLIVE EXECUTION DISABLED. No MT5 orders will be sent.')),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
+    ));
+  }
+  Widget _field(TextEditingController c, String label) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: TextField(controller: c, decoration: InputDecoration(labelText: label, border: const OutlineInputBorder())),
+  );
+  bool _validOrder() {
+    final lots = double.tryParse(lotsInput.text.trim());
+    final symbol = symbolInput.text.trim();
+    final prices = [slInput, tpInput].every((c) => c.text.trim().isEmpty || ((double.tryParse(c.text.trim()) ?? -1) >= 0));
+    return RegExp(r'^[A-Za-z0-9._-]{1,32}$').hasMatch(symbol) && lots != null && lots.isFinite && lots > 0 && prices;
+  }
+  Widget _tradeControls() => ListView(padding: const EdgeInsets.all(16), children: [
+    const Text('New trade — preview only', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+    const SizedBox(height: 12),
+    _field(symbolInput, 'Exact MT5 symbol (e.g. XAUUSDc)'),
+    SegmentedButton<String>(segments: const [ButtonSegment(value: 'BUY', label: Text('BUY')), ButtonSegment(value: 'SELL', label: Text('SELL'))], selected: {side}, onSelectionChanged: (v) => setState(() => side = v.first)),
+    const SizedBox(height: 12),
+    _field(lotsInput, 'Lot size'), _field(slInput, 'Stop Loss price (optional)'), _field(tpInput, 'Take Profit price (optional)'),
+    FilledButton(onPressed: () {
+      if (!_validOrder()) { _message('Check symbol, lots and SL/TP'); return; }
+      _preview('New trade', 'Symbol: ${symbolInput.text.trim()}\nSide: $side\nLots: ${lotsInput.text}\nSL: ${slInput.text}\nTP: ${tpInput.text}');
+    }, child: const Text('Preview new trade')),
+    const Divider(height: 36),
+    const Text('Grid configuration', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+    const Text('Uses symbol, direction, lots, SL and TP above. Spacing is in price units.'),
+    const SizedBox(height: 12),
+    _field(gridCountInput, 'Grid quantity (1–20)'), _field(gridSpacingInput, 'Grid spacing (price difference)'),
+    FilledButton.tonal(onPressed: () {
+      final count = int.tryParse(gridCountInput.text.trim());
+      final spacing = double.tryParse(gridSpacingInput.text.trim());
+      if (!_validOrder() || count == null || count < 1 || count > 20 || spacing == null || !spacing.isFinite || spacing <= 0) {
+        _message('Check grid quantity (1–20) and positive spacing'); return;
+      }
+      final totalLots = count * double.parse(lotsInput.text.trim());
+      _preview('Grid', 'Symbol: ${symbolInput.text.trim()}\nSide: $side\nOrders: $count\nLots per order: ${lotsInput.text}\nTotal lots: $totalLots\nSpacing: $spacing\nSL: ${slInput.text}\nTP: ${tpInput.text}\nOrder type and broker rules must be validated before execution.');
+    }, child: const Text('Preview grid')),
+  ]);
   Widget _positions() => RefreshIndicator(onRefresh: _refresh, child: ListView.builder(
-    itemCount: positions.isEmpty ? 1 : positions.length,
+    itemCount: positions.isEmpty ? 1 : positions.length + 1,
     itemBuilder: (context, i) {
       if (positions.isEmpty) return const ListTile(title: Text('No positions returned'));
-      final p = positions[i] as Map<String, dynamic>;
+      if (i == 0) return _closeBySymbol();
+      final p = positions[i - 1] as Map<String, dynamic>;
       final isBuy = p['type'] == 0;
       return Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5), child: ExpansionTile(
         title: Text('${p['symbol']} • ${isBuy ? 'BUY' : 'SELL'} • ${formatNumber(p['volume'])} lots'),
@@ -166,11 +218,21 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
           ListTile(title: const Text('Entry / Current'), trailing: Text('${formatNumber(p['price_open'], 3)} / ${formatNumber(p['price_current'], 3)}')),
           ListTile(title: const Text('Stop Loss'), trailing: Text(p['sl'] == 0 ? 'Not set' : formatNumber(p['sl'], 3))),
           ListTile(title: const Text('Take Profit'), trailing: Text(p['tp'] == 0 ? 'Not set' : formatNumber(p['tp'], 3))),
+          Wrap(spacing: 8, children: [OutlinedButton(onPressed: () => _preview('Edit SL/TP', 'Ticket: ${p['ticket']}\nSymbol: ${p['symbol']}\nCurrent SL: ${p['sl']}\nCurrent TP: ${p['tp']}'), child: const Text('SL / TP')), OutlinedButton(onPressed: () => _preview('Close position', 'Ticket: ${p['ticket']}\nSymbol: ${p['symbol']}\nLots: ${p['volume']}'), child: const Text('Close'))]),
         ],
       ));
     },
   ));
 
+  Widget _closeBySymbol() {
+    final symbols = positions.whereType<Map<String, dynamic>>().map((p) => p['symbol'].toString()).toSet().toList()..sort();
+    return Column(children: [for (final symbol in symbols) OutlinedButton.icon(
+      onPressed: () {
+        final matches = positions.where((p) => p is Map<String, dynamic> && p['symbol'] == symbol).toList();
+        _preview('Close all by symbol', 'Symbol: $symbol\nPositions: ${matches.length}\nOnly this exact symbol would be affected.');
+      }, icon: const Icon(Icons.layers_clear), label: Text('Close all $symbol — Preview'),
+    )]);
+  }
   Widget _settings() => ListView(padding: const EdgeInsets.all(18), children: [
     const Text('Private API connection', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
     const SizedBox(height: 12),
@@ -202,7 +264,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
         },
       ),
     ),
-    const ListTile(title: Text('Safety mode'), subtitle: Text('Read-only — real-account trade operations disabled')),
+    const ListTile(title: Text('Safety mode'), subtitle: Text('Trade previews only — execution disabled')),
   ]);
 
   @override
@@ -214,10 +276,11 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     darkTheme: ThemeData(colorSchemeSeed: Colors.indigo, brightness: Brightness.dark, useMaterial3: true),
     home: Scaffold(
       appBar: AppBar(title: const Text('Exness Trade Dashboard')),
-      body: IndexedStack(index: tab, children: [_dashboard(), _positions(), _settings()]),
+      body: IndexedStack(index: tab, children: [_dashboard(), _positions(), _tradeControls(), _settings()]),
       bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (v) => setState(() => tab = v), destinations: const [
         NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Dashboard'),
         NavigationDestination(icon: Icon(Icons.list_alt), label: 'Positions'),
+        NavigationDestination(icon: Icon(Icons.add_chart), label: 'Trade'),
         NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
       ]),
     ),
