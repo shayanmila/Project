@@ -1,0 +1,74 @@
+name: Build Exness Trade Dashboard APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Flutter stable
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android project
+        working-directory: android
+        run: |
+          flutter create --platforms=android --project-name exness_trade_dashboard --org online.masoomdev .
+          flutter pub get
+
+      - name: Configure Android biometric activity
+        working-directory: android
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          matches = list(Path('android/app/src/main').glob('**/MainActivity.kt'))
+          if len(matches) != 1:
+              raise SystemExit(f'Expected one Kotlin MainActivity, found {len(matches)}')
+          p = matches[0]
+          s = p.read_text()
+          s = s.replace('import io.flutter.embedding.android.FlutterActivity', 'import io.flutter.embedding.android.FlutterFragmentActivity')
+          s = s.replace('class MainActivity: FlutterActivity()', 'class MainActivity: FlutterFragmentActivity()')
+          if 'FlutterFragmentActivity()' not in s:
+              raise SystemExit('Unable to configure FlutterFragmentActivity')
+          p.write_text(s)
+          manifest = Path('android/app/src/main/AndroidManifest.xml')
+          m = manifest.read_text()
+          m = m.replace('<manifest xmlns:android="http://schemas.android.com/apk/res/android">', '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>')
+          if 'android.permission.USE_BIOMETRIC' not in m:
+              raise SystemExit('Unable to configure biometric permission')
+          manifest.write_text(m)
+          PY
+
+      - name: Analyze Flutter source
+        working-directory: android
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build debug APK
+        working-directory: android
+        run: flutter build apk --debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Exness-Trade-Dashboard-debug-APK
+          path: android/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
