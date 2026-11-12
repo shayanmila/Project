@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 from typing import Literal
 import math
 import time
+import hashlib
+import json
+import uuid
 
 load_dotenv()
 _lock = threading.RLock()
@@ -120,6 +123,8 @@ class CloseSymbolRequest(BaseModel):
 class GridRequest(TradeRequest):
     count: int = Field(ge=1, le=20)
     spacing: float = Field(gt=0)
+    plan_id: str | None = None
+    confirmation_code: str | None = None
 
 def _max_lots():
     return float(os.getenv("MT5_MAX_LOTS_PER_ORDER", "0.10"))
@@ -262,17 +267,116 @@ def close_symbol(req: CloseSymbolRequest):
                 break  # Never continue blindly after an uncertain execution.
         return {"symbol": req.symbol, "results": results}
 
+
+# Preview plans are short lived, bound to exact parameters and the MT5 account.
+# Store only in process memory; a restart invalidates all confirmations.
+_grid_plans = {}
+_grid_used = set()
+
+def _grid_plan(mt5, account, req):
+    if req.count > min(20, int(os.getenv("MT5_MAX_GRID_ORDERS", "5"))):
+        raise HTTPException(status_code=422, detail="Grid quantity exceeds server limit")
+    info = _symbol(mt5, req.symbol)
+    _volume(info, req.lots)
+    _finite_prices(req.sl, req.tp, req.spacing)
+    if not math.isfinite(req.spacing) or req.spacing <= 0:
+        raise HTTPException(status_code=422, detail="Invalid grid spacing")
+    if req.count * req.lots > _max_total() + 1e-9:
+        raise HTTPException(status_code=422, detail="Grid total lots exceeds limit")
+    tick = mt5.symbol_info_tick(req.symbol)
+    if tick is None or tick.ask <= 0 or tick.bid <= 0:
+        raise HTTPException(status_code=503, detail="Quote unavailable")
+    digits = int(info.digits)
+    point = float(info.point)
+    if point <= 0:
+        raise HTTPException(status_code=422, detail="Invalid broker point size")
+    # First pending order is one spacing unit away; never execute at market.
+    anchor = float(tick.ask if req.side == "BUY" else tick.bid)
+    min_distance = max(int(info.trade_stops_level), int(info.trade_freeze_level)) * point
+    orders = []
+    for i in range(1, req.count + 1):
+        raw = anchor + (-1 if req.side == "BUY" else 1) * i * req.spacing
+        price = round(raw, digits)
+        if price <= 0 or abs(anchor - price) < min_distance + point * 0.5:
+            raise HTTPException(status_code=422, detail=f"Grid level {i} too close to market")
+        if orders and abs(orders[-1]["price"] - price) < point * 0.5:
+            raise HTTPException(status_code=422, detail="Grid spacing smaller than price precision")
+        if req.sl and ((req.side == "BUY" and req.sl >= price) or
+                       (req.side == "SELL" and req.sl <= price)):
+            raise HTTPException(status_code=422, detail=f"SL invalid at grid level {i}")
+        if req.tp and ((req.side == "BUY" and req.tp <= price) or
+                       (req.side == "SELL" and req.tp >= price)):
+            raise HTTPException(status_code=422, detail=f"TP invalid at grid level {i}")
+        if (req.sl and abs(req.sl - price) < min_distance) or (req.tp and abs(req.tp - price) < min_distance):
+            raise HTTPException(status_code=422, detail=f"SL/TP too close to grid level {i}")
+        order = {"action": mt5.TRADE_ACTION_PENDING, "symbol": req.symbol,
+                 "volume": req.lots,
+                 "type": mt5.ORDER_TYPE_BUY_LIMIT if req.side == "BUY" else mt5.ORDER_TYPE_SELL_LIMIT,
+                 "price": price, "sl": round(req.sl, digits), "tp": round(req.tp, digits),
+                 "type_time": mt5.ORDER_TIME_GTC, "comment": "ExnessGrid"}
+        orders.append(order)
+    # Include existing exposure, including pending orders, in a conservative cap.
+    existing_positions = mt5.positions_get(symbol=req.symbol)
+    existing_orders = mt5.orders_get(symbol=req.symbol)
+    if existing_positions is None or existing_orders is None:
+        raise HTTPException(status_code=503, detail="Cannot determine existing symbol exposure")
+    existing_lots = sum(float(p.volume) for p in existing_positions) + sum(float(o.volume_current) for o in existing_orders)
+    if existing_lots + req.count * req.lots > _max_total() + 1e-9:
+        raise HTTPException(status_code=422, detail="Existing symbol exposure plus grid exceeds total-lot limit")
+    return orders
+
+@app.post("/trading/grid/preview", dependencies=[Depends(auth)])
+def grid_preview(req: GridRequest):
+    with _lock:
+        mt5, account = _session()
+        orders = _grid_plan(mt5, account, req)
+        plan_id = uuid.uuid4().hex
+        confirmation_code = uuid.uuid4().hex[:8].upper()
+        params = req.model_dump(exclude={"confirm", "plan_id", "confirmation_code"})
+        _grid_plans.clear()  # Only the latest preview can be executed.
+        _grid_plans[plan_id] = {"created": time.monotonic(), "login": account.login,
+                                "params": params, "orders": orders, "code": confirmation_code}
+        return {"plan_id": plan_id, "confirmation_code": confirmation_code,
+                "expires_in_seconds": 30, "execution_enabled": _enabled(),
+                "orders": [{"symbol": o["symbol"], "type": "BUY_LIMIT" if req.side == "BUY" else "SELL_LIMIT",
+                            "price": o["price"], "volume": o["volume"], "sl": o["sl"], "tp": o["tp"]}
+                           for o in orders],
+                "total_lots": req.lots * req.count}
+
 @app.post("/trading/grid", dependencies=[Depends(auth)])
 def open_grid(req: GridRequest):
     _require_live()
-    if not req.confirm:
-        raise HTTPException(status_code=428, detail="Explicit confirmation required")
-    if req.count > min(20, int(os.getenv("MT5_MAX_GRID_ORDERS", "5"))):
-        raise HTTPException(status_code=422, detail="Grid quantity exceeds server limit")
-    _finite_prices(req.spacing)
-    if req.lots * req.count > _max_total():
-        raise HTTPException(status_code=422, detail="Grid total lots exceeds limit")
-    # Grid order type, level generation, expiry and margin validation require
-    # a separately tested implementation. Fail closed rather than place
-    # repeated market orders accidentally.
-    raise HTTPException(status_code=501, detail="Grid execution not yet validated; no orders sent")
+    if not req.confirm or not req.plan_id or not req.confirmation_code:
+        raise HTTPException(status_code=428, detail="Fresh preview and explicit confirmation required")
+    with _lock:
+        plan = _grid_plans.get(req.plan_id)
+        if not plan or req.plan_id in _grid_used or time.monotonic() - plan["created"] > 30:
+            raise HTTPException(status_code=409, detail="Grid preview missing, used or expired")
+        if req.confirmation_code != plan["code"] or req.model_dump(exclude={"confirm", "plan_id", "confirmation_code"}) != plan["params"]:
+            raise HTTPException(status_code=409, detail="Grid confirmation mismatch")
+        # Consume before any order is sent: no duplicate submission on retry.
+        _grid_used.add(req.plan_id)
+        _grid_plans.pop(req.plan_id, None)
+        mt5, account = _session()
+        if account.login != plan["login"]:
+            raise HTTPException(status_code=409, detail="Account changed since preview")
+        current = _grid_plan(mt5, account, req)
+        if any(abs(a["price"] - b["price"]) > 1e-9 for a, b in zip(current, plan["orders"])):
+            raise HTTPException(status_code=409, detail="Market moved; preview grid again")
+        # Preflight all orders before sending any. MT5 may still reject later orders.
+        for order in current:
+            check = mt5.order_check(order)
+            if check is None or check.retcode not in (0, mt5.TRADE_RETCODE_DONE):
+                raise HTTPException(status_code=422, detail="Broker rejected grid preflight; no orders sent")
+        results = []
+        for order in current:
+            result = mt5.order_send(order)
+            if result is None:
+                return {"status": "partial_or_unknown", "results": results,
+                        "warning": "MT5 result unknown; inspect pending orders before any retry"}
+            if result.retcode != mt5.TRADE_RETCODE_PLACED:
+                return {"status": "partial", "results": results,
+                        "rejected_retcode": result.retcode,
+                        "warning": "Stopped after broker rejection; inspect pending orders"}
+            results.append({"ticket": result.order, "price": order["price"]})
+        return {"status": "placed", "results": results}
