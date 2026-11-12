@@ -45,7 +45,7 @@ jobs:
           p = matches[0]
           s = p.read_text()
           s = s.replace('import io.flutter.embedding.android.FlutterActivity', 'import io.flutter.embedding.android.FlutterFragmentActivity')
-          s = s.replace('class MainActivity: FlutterActivity()', 'class MainActivity: FlutterFragmentActivity()')
+          s = s.replace('FlutterActivity()', 'FlutterFragmentActivity()')
           if 'FlutterFragmentActivity()' not in s:
               raise SystemExit('Unable to configure FlutterFragmentActivity')
           p.write_text(s)
