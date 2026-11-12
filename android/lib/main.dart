@@ -141,7 +141,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     final a = account;
     final currency = a?['currency']?.toString() ?? '';
     return RefreshIndicator(onRefresh: _refresh, child: ListView(padding: const EdgeInsets.all(12), children: [
-      const ListTile(title: Text('REAL ACCOUNT • EXECUTION DISABLED', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Trade controls are previews only; no orders will be sent')),
+      const ListTile(title: Text('REAL ACCOUNT • GRID VIA SERVER', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Grid requires server enable and confirmation; other trade controls remain previews.')),
       ListTile(title: Text(status), leading: Icon(status.startsWith('Connected') ? Icons.cloud_done : Icons.cloud_off)),
       if (a == null) const ListTile(title: Text('Waiting for account data...')),
       if (a != null) ...[
@@ -206,118 +206,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
     if (!_validOrder() || count == null || count < 1 || count > 20 || spacing == null || !spacing.isFinite || spacing <= 0) {
       _message('Check grid inputs'); return;
     }
-    final base = url.text.trim().replaceAll(RegExp(r'/+ ListView(padding: const EdgeInsets.all(16), children: [
-    const Text('New trade — preview only', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-    const SizedBox(height: 12),
-    _field(symbolInput, 'Exact MT5 symbol (e.g. XAUUSDc)'),
-    SegmentedButton<String>(segments: const [ButtonSegment(value: 'BUY', label: Text('BUY')), ButtonSegment(value: 'SELL', label: Text('SELL'))], selected: {side}, onSelectionChanged: (v) => setState(() => side = v.first)),
-    const SizedBox(height: 12),
-    _field(lotsInput, 'Lot size'), _field(slInput, 'Stop Loss price (optional)'), _field(tpInput, 'Take Profit price (optional)'),
-    FilledButton(onPressed: () {
-      if (!_validOrder()) { _message('Check symbol, lots and SL/TP'); return; }
-      _preview('New trade', 'Symbol: ${symbolInput.text.trim()}\nSide: $side\nLots: ${lotsInput.text}\nSL: ${slInput.text}\nTP: ${tpInput.text}');
-    }, child: const Text('Preview new trade')),
-    const Divider(height: 36),
-    const Text('Grid configuration', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-    const Text('Uses symbol, direction, lots, SL and TP above. Spacing is in price units.'),
-    const SizedBox(height: 12),
-    _field(gridCountInput, 'Grid quantity (1–20)'), _field(gridSpacingInput, 'Grid spacing (price difference)'),
-    FilledButton.tonal(onPressed: () {
-      final count = int.tryParse(gridCountInput.text.trim());
-      final spacing = double.tryParse(gridSpacingInput.text.trim());
-      if (!_validOrder() || count == null || count < 1 || count > 20 || spacing == null || !spacing.isFinite || spacing <= 0) {
-        _message('Check grid quantity (1–20) and positive spacing'); return;
-      }
-      final totalLots = count * double.parse(lotsInput.text.trim());
-      _preview('Grid', 'Symbol: ${symbolInput.text.trim()}\nSide: $side\nOrders: $count\nLots per order: ${lotsInput.text}\nTotal lots: $totalLots\nSpacing: $spacing\nSL: ${slInput.text}\nTP: ${tpInput.text}\nOrder type and broker rules must be validated before execution.');
-    }, child: const Text('Preview grid')),
-    const SizedBox(height: 8),
-    FilledButton.icon(onPressed: _submitGrid, icon: const Icon(Icons.warning_amber), child: const Text('Submit LIVE grid')),
-  ]);
-  Widget _positions() => RefreshIndicator(onRefresh: _refresh, child: ListView.builder(
-    itemCount: positions.isEmpty ? 1 : positions.length + 1,
-    itemBuilder: (context, i) {
-      if (positions.isEmpty) return const ListTile(title: Text('No positions returned'));
-      if (i == 0) return _closeBySymbol();
-      final p = positions[i - 1] as Map<String, dynamic>;
-      final isBuy = p['type'] == 0;
-      return Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5), child: ExpansionTile(
-        title: Text('${p['symbol']} • ${isBuy ? 'BUY' : 'SELL'} • ${formatNumber(p['volume'])} lots'),
-        subtitle: Text('P/L: ${formatNumber(p['profit'])} ${account?['currency'] ?? ''}'),
-        children: [
-          ListTile(title: const Text('Ticket'), trailing: Text('${p['ticket']}')),
-          ListTile(title: const Text('Entry / Current'), trailing: Text('${formatNumber(p['price_open'], 3)} / ${formatNumber(p['price_current'], 3)}')),
-          ListTile(title: const Text('Stop Loss'), trailing: Text(p['sl'] == 0 ? 'Not set' : formatNumber(p['sl'], 3))),
-          ListTile(title: const Text('Take Profit'), trailing: Text(p['tp'] == 0 ? 'Not set' : formatNumber(p['tp'], 3))),
-          Wrap(spacing: 8, children: [OutlinedButton(onPressed: () => _editStops(p), child: const Text('SL / TP')), OutlinedButton(onPressed: () => _preview('Close position', 'Ticket: ${p['ticket']}\nSymbol: ${p['symbol']}\nLots: ${p['volume']}'), child: const Text('Close'))]),
-        ],
-      ));
-    },
-  ));
-
-  Widget _closeBySymbol() {
-    final symbols = positions.whereType<Map<String, dynamic>>().map((p) => p['symbol'].toString()).toSet().toList()..sort();
-    return Column(children: [for (final symbol in symbols) OutlinedButton.icon(
-      onPressed: () {
-        final matches = positions.where((p) => p is Map<String, dynamic> && p['symbol'] == symbol).toList();
-        _preview('Close all by symbol', 'Symbol: $symbol\nPositions: ${matches.length}\nOnly this exact symbol would be affected.');
-      }, icon: const Icon(Icons.layers_clear), label: Text('Close all $symbol — Preview'),
-    )]);
-  }
-  Widget _settings() => ListView(padding: const EdgeInsets.all(18), children: [
-    const Text('Private API connection', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-    const SizedBox(height: 12),
-    TextField(controller: url, decoration: const InputDecoration(labelText: 'Tailscale HTTPS base URL', border: OutlineInputBorder()), keyboardType: TextInputType.url),
-    const SizedBox(height: 12),
-    TextField(controller: token, obscureText: true, enableSuggestions: false, autocorrect: false, decoration: const InputDecoration(labelText: 'API token', border: OutlineInputBorder())),
-    const SizedBox(height: 12),
-    FilledButton(onPressed: _save, child: const Text('Save secure connection')),
-    SwitchListTile(title: const Text('Dark theme'), value: dark, onChanged: (v) async {
-      await store.write(key: 'dark', value: '$v');
-      setState(() => dark = v);
-    }),
-    ListTile(
-      title: const Text('Refresh interval'),
-      subtitle: Text('Every $refreshSeconds seconds while app is open'),
-      trailing: DropdownButton<int>(
-        value: refreshSeconds,
-        items: const [1, 2, 5, 10, 15, 30, 60]
-            .map((seconds) => DropdownMenuItem<int>(
-                  value: seconds,
-                  child: Text('$seconds sec'),
-                ))
-            .toList(),
-        onChanged: (value) async {
-          if (value == null) return;
-          await store.write(key: 'refresh_seconds', value: '$value');
-          setState(() => refreshSeconds = value);
-          _start();
-        },
-      ),
-    ),
-    const ListTile(title: Text('Safety mode'), subtitle: Text('Trade previews only — execution disabled')),
-  ]);
-
-  @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    title: 'Exness Trade Dashboard',
-    themeMode: dark ? ThemeMode.dark : ThemeMode.light,
-    theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-    darkTheme: ThemeData(colorSchemeSeed: Colors.indigo, brightness: Brightness.dark, useMaterial3: true),
-    home: Scaffold(
-      appBar: AppBar(title: const Text('Exness Trade Dashboard')),
-      body: IndexedStack(index: tab, children: [_dashboard(), _positions(), _tradeControls(), _settings()]),
-      bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (v) => setState(() => tab = v), destinations: const [
-        NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Dashboard'),
-        NavigationDestination(icon: Icon(Icons.list_alt), label: 'Positions'),
-        NavigationDestination(icon: Icon(Icons.add_chart), label: 'Trade'),
-        NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
-      ]),
-    ),
-  );
-}
-), '');
+    final base = url.text.trim().replaceAll(RegExp(r'/+$'), '');
     if (!configured || !base.startsWith('https://')) { _message('Configure HTTPS first'); return; }
     final headers = {'Authorization': 'Bearer ${token.text.trim()}', 'Content-Type': 'application/json'};
     final payload = <String, dynamic>{
@@ -350,7 +239,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
       if (!mounted) return;
       if (response.statusCode != 200) { _message('Grid submission rejected: ${response.statusCode}. Check MT5 before retrying.'); return; }
       final result = jsonDecode(response.body) as Map<String, dynamic>;
-      await _preview('Grid submission result', 'Status: ${result['status']}\n${jsonEncode(result['results'])}\nVerify pending orders in MT5.');
+      await showDialog<void>(context: context, builder: (ctx) => AlertDialog(title: const Text('MT5 grid submission result'), content: SingleChildScrollView(child: Text('Status: ${result['status']}\n${jsonEncode(result['results'])}\nVerify pending orders in MT5.')), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))]));
       await _refresh();
     } on TimeoutException {
       if (mounted) _message('Grid request timed out. Check MT5; do not retry blindly.');
@@ -384,6 +273,8 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
       final totalLots = count * double.parse(lotsInput.text.trim());
       _preview('Grid', 'Symbol: ${symbolInput.text.trim()}\nSide: $side\nOrders: $count\nLots per order: ${lotsInput.text}\nTotal lots: $totalLots\nSpacing: $spacing\nSL: ${slInput.text}\nTP: ${tpInput.text}\nOrder type and broker rules must be validated before execution.');
     }, child: const Text('Preview grid')),
+    const SizedBox(height: 8),
+    FilledButton.icon(onPressed: _submitGrid, icon: const Icon(Icons.warning_amber), label: const Text('Submit LIVE grid')),
   ]);
   Widget _positions() => RefreshIndicator(onRefresh: _refresh, child: ListView.builder(
     itemCount: positions.isEmpty ? 1 : positions.length + 1,
@@ -446,7 +337,7 @@ class _TradeAppState extends State<TradeApp> with WidgetsBindingObserver {
         },
       ),
     ),
-    const ListTile(title: Text('Safety mode'), subtitle: Text('Trade previews only — execution disabled')),
+    const ListTile(title: Text('Safety mode'), subtitle: Text('Individual trades and closing positions: preview only. Grid requires server approval.')),
   ]);
 
   @override
